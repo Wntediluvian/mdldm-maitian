@@ -7,7 +7,7 @@ import { BASE, TOKEN, X_HANDLE, PROFILE, ACCOUNTS } from './token.js';
 
 // 每次改了这个文件夹里的代码就改这个编号。插件开工前会问工作台磁盘上的编号是多少，不一样就自己重新加载，
 // 所以以后改读取规则不用再去扩展管理页手动点“重新加载”。
-const BUILD = '2026-11-21.1';
+const BUILD = '2026-11-22.1';
 // 后台标签页里，X 和小红书的列表滚不出更早的条目（页面不可见时不加载），每天自动跑只读得到最近十来条，够用。
 // 点图标手动采时改在前台开页面，能把更早的也读全；那两三分钟里标签页会自己切换，结束后切回原来那页。
 let foreground = false;
@@ -103,11 +103,12 @@ async function collectAll(force) {
   const [was] = foreground ? await chrome.tabs.query({ active: true, lastFocusedWindow: true }) : [];
   try {
     for (const p of Object.keys(PLANS)) {
-      if (!PLANS[p].length || off[p]) continue;
+      // “没登录”的平台第二天自动再试一次（作者扫完码就能恢复，也能每天提醒一次）；登录的不是自己的号、没配账号的，等点图标才重试
+      if (!PLANS[p].length || (off[p] && !(String(off[p]).endsWith(':retry') && !String(off[p]).startsWith(bjDay())))) continue;
       if (p === 'x' && !results.some((r) => !r.error)) { results.push({ platform: 'x', error: 'not_home_profile' }); continue; }
       let r;
       try { r = await collectPlatform(p); } catch (e) { r = { platform: p, error: String(e.message || e).slice(0, 120) }; }
-      if (['not_logged_in', 'wrong_account', 'no_account_configured'].includes(r.error)) off[p] = bjDay();   // 这个浏览器没登录、登录的是别的号、或没配账号：以后不再打开，点图标时重试
+      if (['not_logged_in', 'wrong_account', 'no_account_configured'].includes(r.error)) off[p] = r.error === 'not_logged_in' ? `${bjDay()}:retry` : bjDay();   // 这个浏览器没登录、登录的是别的号、或没配账号：以后不再打开，点图标时重试
       results.push(r);
     }
     const payload = { profile: await who(), at: new Date().toISOString(), build: BUILD, results };

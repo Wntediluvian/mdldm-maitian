@@ -4,7 +4,9 @@
 // 怎么对上已登记的文章：X 按帖子编号对链接；公众号按标题；其余平台按“发布于 YYYY-MM-DD HH:MM”（北京时间，精确到分）。
 // 对不上的条目（短帖、还没登记的文章）不入库，只在返回里计数。口令是 config.web.collectToken，和网页口令分开。
 import fs from 'node:fs'; import path from 'node:path'; import { fileURLToPath } from 'node:url';
-import { db, saveMetric, log, setMeta } from './db.mjs';
+import { db, saveMetric, log, setMeta, getMeta, NAMES } from './db.mjs';
+import { config } from './feishu.mjs';
+import { sendWechat } from './wechat.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 db.exec('CREATE TABLE IF NOT EXISTS followers (day TEXT, platform TEXT, total INTEGER, gain INTEGER, loss INTEGER, source TEXT, collected_at TEXT, PRIMARY KEY (day, platform));');
@@ -41,14 +43,30 @@ function findEpisode(platform, it) {
   return null;
 }
 
+// 平台后台掉登录（或登录的不是自己的号）：经微信网关提醒作者去扫码。同一平台同一种问题一天只提醒一次。
+const LOGIN_URL = { wechat: 'mp.weixin.qq.com', douyin: 'creator.douyin.com', xhs: 'creator.xiaohongshu.com', bilibili: 'member.bilibili.com' };
+function remindLogin(p, err, day) {
+  if (!['not_logged_in', 'wrong_account'].includes(err) || !config.wechat?.notify) return;
+  const key = `remind:${p}:${err}`;
+  if (getMeta(key) === day) return;
+  setMeta(key, day);
+  const name = NAMES[p] || p;
+  const head = err === 'not_logged_in' ? `${name}后台掉登录了，有空到电脑上扫一下码` : `${name}后台登录的不是 Grady 的号，要换回来`;
+  const body = `电脑上打开 Edge 配置 2，进 ${LOGIN_URL[p] || name + '后台'}，用微信扫码登录。登录后点一下工具栏的“Grady 采集”图标补采。没处理的话明天采集时还会再提醒一次。`;
+  sendWechat(`${head}
+${body}`, config.wechat).catch(() => {});
+}
+
 export function ingest(payload) {
   const day = bj(payload.at || Date.now()).slice(0, 10);
   const out = { day, platforms: {} };
+  // 同一批里至少有一个平台读成功，才说明这是放自媒体账号的那个浏览器配置；别的配置没登录不提醒
+  const home = (payload.results || []).some((r) => !r.error);
   for (const r of payload.results || []) {
     const p = r.platform, o = (out.platforms[p] = { matched: 0, unmatched: 0, followers: null, error: r.error || '' });
     // 每个平台最近一次的结果，给大屏右上角的“采集”灯用
     const last = (x) => setMeta(`collect:${p}:last`, JSON.stringify({ at: new Date().toISOString(), ...x }));
-    if (r.error) { setMeta(`collect:${p}:error`, `${day} ${r.error}`); last({ error: r.error }); continue; }
+    if (r.error) { setMeta(`collect:${p}:error`, `${day} ${r.error}`); last({ error: r.error }); if (home) remindLogin(p, r.error, day); continue; }
     const fans = num(r.followers);
     if (fans != null) {
       db.prepare('INSERT INTO followers (day, platform, total, gain, loss, source, collected_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(day, platform) DO UPDATE SET total=excluded.total, source=excluded.source, collected_at=excluded.collected_at')
