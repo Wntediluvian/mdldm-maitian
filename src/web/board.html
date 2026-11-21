@@ -57,7 +57,7 @@ function drawFans(el, days, marks) {
   rows.forEach(r => r.tot = r.segs.reduce((s, x) => s + x.v, 0));
   const top = niceMax(Math.max(...rows.map(r => r.tot), 1)), Y = (v) => T + ph - v / top * ph;
   let s = `<svg width="${w}" height="${h}"><defs>${FANP.map(p => `<linearGradient id="fg-${p}" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="var(--p-${p})"/><stop offset="1" stop-color="var(--p-${p})" stop-opacity=".55"/></linearGradient>`).join('')}</defs>`;
-  for (const t of [0, top / 2, top]) s += `<line x1="${L}" x2="${w - R}" y1="${Y(t)}" y2="${Y(t)}" stroke="rgba(0,0,0,.07)"/><text x="${L - 6}" y="${Y(t) + 4}" text-anchor="end">${t ? '+' : ''}${fmt(t)}</text>`;
+  for (const t of (top >= 4 ? [0, top / 2, top] : [0, top])) s += `<line x1="${L}" x2="${w - R}" y1="${Y(t)}" y2="${Y(t)}" stroke="rgba(0,0,0,.07)"/><text x="${L - 6}" y="${Y(t) + 4}" text-anchor="end">${t ? '+' : ''}${fmt(t)}</text>`;
   rows.forEach((r, i) => {
     const x = L + i * band + (band - bw) / 2; let acc = 0;
     r.segs.forEach((g, j) => { const y1 = Y(acc), y2 = Y(acc + g.v), hh = Math.max(1.5, y1 - y2 - (j < r.segs.length - 1 ? 2 : 0)); acc += g.v;
@@ -70,6 +70,9 @@ function drawFans(el, days, marks) {
     if ((i % 5 === 0 && n - 1 - i > 4) || i === n - 1) s += `<text x="${(x + bw / 2).toFixed(1)}" y="${h - 5}" text-anchor="${i === n - 1 ? 'end' : 'middle'}">${r.d.slice(5)}</text>`;
     s += `<rect x="${(L + i * band).toFixed(1)}" y="${T}" width="${band.toFixed(1)}" height="${ph}" fill="transparent" data-tip="${r.d.slice(5)}${mk ? '  ' + esc(mk) + ' 发布' : ''}\n${r.segs.length ? r.segs.map(g => PN[g.p] + '  +' + fmt(g.v)).join('\n') + '\n合计  +' + fmt(r.tot) : '没有记录'}"/>`;
   });
+  // 刚开始记录、有数的天不到 3 天：图上几乎是空的，写一句说明，别让人以为坏了
+  const had = rows.filter(r => r.tot > 0).length;
+  if (had < 3) s += `<text x="${(L + pw / 2).toFixed(1)}" y="${(T + ph / 2).toFixed(1)}" text-anchor="middle" style="fill:var(--t3);font-size:13px">每日净增要连续记几天才有柱子，目前有 ${had} 天</text>`;
   el.innerHTML = s + '</svg>';
 }
 function sparkLine(p) {
@@ -153,6 +156,16 @@ function render() {
   const prevOf = (e) => eps.filter(x => x !== e && x.views > 50 && at(x) < at(e)).sort((a, b) => at(b) - at(a))[0] || eps.find(x => x !== e && x.views > 50) || null;
   const prev = prevOf(cur); PREVOF = prevOf; HID = cur && cur.id;
   const today = new Date().toLocaleDateString('zh-CN');
+  const fresh = h.dataDay && (Date.now() - new Date(h.dataDay + 'T00:00:00+08:00')) < 2.5 * 864e5;
+  const ERR = { not_logged_in: '没登录，要扫码', wrong_account: '登录的不是自己的号', empty_list_background: '后台没读到列表，点一下插件补采', not_home_profile: '没核对上账号，跳过', no_account_configured: '没配账号' };
+  const cl = Object.entries(h.collect || {}).map(([p, x]) => {
+    if (!x) return { p, ok: false, say: '还没采过' };
+    const when = new Date(x.at), ago = (Date.now() - when) / 864e5, t = `${when.getMonth() + 1}-${when.getDate()} ${pad(when.getHours())}:${pad(when.getMinutes())}`;
+    if (x.error) return { p, ok: false, say: `${ERR[x.error] || x.error}（${t}）` };
+    if (ago > 2) return { p, ok: false, say: `超过 2 天没采（上次 ${t}）` };
+    if (!x.items) return { p, ok: false, say: `读到 0 条（${t}），点一下插件补采` };
+    return { p, ok: true, say: `读到 ${x.items} 条，对上 ${x.matched} 篇（${t}）` };
+  });
   const loginOk = Object.values(h.login).every(v => v === 'ok'), checked = h.doctorDay === today;
   const fansTotal = FANP.reduce((s, p) => s + (latest(p) || 0), 0);
   const g1 = FANP.map(p => gainN(p, 1)).filter(v => v != null), g7 = FANP.map(p => gainN(p, 7)).filter(v => v != null), g30 = FANP.map(p => gainN(p, 30)).filter(v => v != null);
@@ -173,8 +186,7 @@ function render() {
   $('#screen').innerHTML = `
   <div class="top"><div class="logo">${brand(O.name)}</div><div class="tag">内容与粉丝监控</div>
     <div class="nav"><a class="on" href="/">大屏</a><a href="/p#/traffic">流量</a><a href="/p#/calendar">日历</a><a href="/p#/convert">转化</a><a href="/p#/archive">档案</a><a href="/p#/system">系统</a></div>
-    <div class="lights">${h.chromeOn ? '<span class="light ok">守护进程 运行中</span>' : `<span class="light ${h.dataDay && (Date.now() - new Date(h.dataDay + 'T00:00:00+08:00')) < 2.5 * 864e5 ? 'ok' : 'warn'}">数据 ${h.dataDay ? '更新到 ' + h.dataDay.slice(5) : '还没采'}</span>`}<span class="light ${h.nas ? 'ok' : 'bad'}">${h.nasOn ? 'NAS' : '工程目录'} ${h.nas ? (h.nasOn ? '已挂载' : '正常') : '读不到'}</span>${h.chromeOn ? `<span class="light ${h.chrome ? 'ok' : 'bad'}">专用浏览器 ${h.chrome ? '在线' : '没开'}</span>` : ''}
-      <span class="light ${!loginOk ? 'bad' : checked ? 'ok' : 'warn'}">平台登录 ${!loginOk ? '有掉线' : checked ? '今日已检' : '今天还没检'}</span></div>
+    <div class="lights">${h.chromeOn ? `<span class="light ${h.chrome ? 'ok' : 'bad'}">专用浏览器 ${h.chrome ? '在线' : '没开'}</span><span class="light ${!loginOk ? 'bad' : checked ? 'ok' : 'warn'}">平台登录 ${!loginOk ? '有掉线' : checked ? '今日已检' : '今天还没检'}</span>` : `<span class="light ${fresh ? 'ok' : 'warn'}" data-tip="${fresh ? '最近 2 天内有新数据' : '超过 2 天没有新数据：看看 Edge 配置 2 开着没有，或点一下采集插件'}">数据 ${h.dataDay ? '更新到 ' + h.dataDay.slice(5) : '还没采'}</span>${cl.length ? `<a href="/p#/system" class="light ${cl.every(x => x.ok) ? 'ok' : 'warn'}" data-tip="${esc(cl.map(x => PN[x.p] + '  ' + x.say).join('\n'))}">采集 ${cl.filter(x => x.ok).length}/${cl.length} 正常</a>` : ''}`}</div>
     <div class="clock" id="clock"></div></div>
 
   <div class="r1">

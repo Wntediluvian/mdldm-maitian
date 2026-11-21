@@ -46,7 +46,9 @@ export function ingest(payload) {
   const out = { day, platforms: {} };
   for (const r of payload.results || []) {
     const p = r.platform, o = (out.platforms[p] = { matched: 0, unmatched: 0, followers: null, error: r.error || '' });
-    if (r.error) { setMeta(`collect:${p}:error`, `${day} ${r.error}`); continue; }
+    // 每个平台最近一次的结果，给大屏右上角的“采集”灯用
+    const last = (x) => setMeta(`collect:${p}:last`, JSON.stringify({ at: new Date().toISOString(), ...x }));
+    if (r.error) { setMeta(`collect:${p}:error`, `${day} ${r.error}`); last({ error: r.error }); continue; }
     const fans = num(r.followers);
     if (fans != null) {
       db.prepare('INSERT INTO followers (day, platform, total, gain, loss, source, collected_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(day, platform) DO UPDATE SET total=excluded.total, source=excluded.source, collected_at=excluded.collected_at')
@@ -60,6 +62,7 @@ export function ingest(payload) {
       o.matched++;
     }
     setMeta(`collect:${p}`, new Date().toISOString());
+    last({ matched: o.matched, items: (r.items || []).length });
   }
   if ((payload.results || []).some((r) => !r.error)) setMeta('metricsDay', day);
   const line = `${payload.profile || '?'} ${payload.build || ''} ${(payload.results || []).length ? JSON.stringify(out.platforms) : '开始采集'}`;
