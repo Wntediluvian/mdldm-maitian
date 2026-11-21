@@ -121,8 +121,31 @@ async function vEpisode(id) {
   ${sec('过程记录')}<div class="panel"><div class="mono">${e.logs.length ? e.logs.map(l => { let r = l.result || ''; try { const j = JSON.parse(r); r = [j.status, j.url, j.note].filter(Boolean).join('  '); } catch {} return `${when(l.ts)}  ${esc(PN[l.platform] || l.platform || '-')}  ${esc(l.action)}  ${esc(r)}`; }).join('\n') : '没有记录'}</div></div>`;
 }
 
+// 本机模式（没有专用浏览器和 NAS）：数据由 Edge 配置 2 里的“Grady 采集”插件交来，这里只如实显示它的情况
+function vSystemLocal(h) {
+  const ERR = { not_logged_in: '没登录，要扫码', wrong_account: '登录的不是自己的号', empty_list_background: '后台没读到列表', not_home_profile: '没核对上账号，跳过', no_account_configured: '没配账号' };
+  const rows = Object.entries(h.collect || {}).map(([p, x]) => {
+    if (!x) return { p, ok: false, st: '还没采过', t: '–' };
+    const w = new Date(x.at), t = `${w.getMonth() + 1}-${w.getDate()} ${pad(w.getHours())}:${pad(w.getMinutes())}`;
+    if (x.error) return { p, ok: false, st: ERR[x.error] || x.error, t };
+    if ((Date.now() - w) / 864e5 > 2) return { p, ok: false, st: '超过 2 天没采', t };
+    if (!x.items) return { p, ok: false, st: '读到 0 条', t };
+    return { p, ok: true, st: `读到 ${x.items} 条，对上 ${x.matched} 篇`, t };
+  });
+  const okN = rows.filter(r => r.ok).length;
+  const fresh = h.dataDay && (Date.now() - new Date(h.dataDay + 'T00:00:00+08:00')) < 2.5 * 864e5;
+  return `<div class="h1">系统</div><p class="lead">工作台自己的运行情况。数据由 Edge 配置 2 里的“Grady 采集”插件交来；发布不从这里走。</p>
+  <div class="grid g4">${tile('工作台服务', '运行中', '登录 Windows 后自动启动，退出后 10 秒自动重启')}${tile('数据', h.dataDay ? '更新到 ' + h.dataDay.slice(5) : '还没采', fresh ? '最近 2 天内有新数据' : '超过 2 天没有新数据')}${tile('采集', `${okN}/${rows.length} 正常`, okN === rows.length ? '各平台最近一次都读到了' : '有平台没读到，见下表')}${tile('采集插件', 'Edge 配置 2', '只读页面文字，不点按钮、不发东西')}</div>
+  ${sec('各平台最近一次采集')}
+  <div class="panel">${rows.map(r => `<div class="prow"><span class="st-chip ${r.ok ? 'published' : 'failed'}"><i>${r.ok ? '✓' : '!'}</i>${r.ok ? '正常' : '要处理'}</span><span>${logo(r.p)} ${esc(PN[r.p] || r.p)}　${esc(r.st)}</span><span class="d">${esc(r.t)}</span></div>`).join('') || '<div class="empty" style="height:60px">还没有采集记录</div>'}</div>
+  ${sec('怎么让它更新')}
+  <div class="panel"><dl class="kv"><dt>自动</dt><dd>Edge 配置 2 开着时，插件每天北京时间 9 点后自动采一次（后台标签页里抖音偶尔读不到列表）</dd><dt>手动</dt><dd>在 Edge 配置 2 的工具栏点“Grady 采集”图标，会在前台依次打开各平台后台，两三分钟后切回原来的页面</dd><dt>公众号</dt><dd>后台掉登录后要在配置 2 里扫码登录一次，插件才能再读</dd></dl></div>
+  ${sec('最近动态')}<div class="panel">${O.feed.map(f => `<div class="fd"><span class="tm">${when(f.ts).split(' ')[1]}</span><span class="ep">${f.nick ? esc(f.nick) : ''}</span><span>${esc(f.platform)}</span><span class="rs">${esc(f.action)}${f.result ? ' · ' + esc(f.result) : ''}</span></div>`).join('') || '<div class="empty" style="height:60px">还没有动态</div>'}</div>`;
+}
+
 function vSystem() {
   const h = O.health, today = new Date().toLocaleDateString('zh-CN'), cur = O.episodes[0];
+  if (!h.chromeOn) return vSystemLocal(h);
   return `<div class="h1">系统</div><p class="lead">工作台自己的运行情况，和需要手动触发的操作。发布只能从命令行发起，这里没有上传入口。</p>
   <div class="grid g4">${tile('守护进程', '运行中', '开机自启，崩溃自动拉起')}${tile('NAS', h.nas ? '已挂载' : '读不到', h.nas ? '工程目录可读' : '取链接和封面会失败')}${tile('专用浏览器', h.chrome ? '在线' : '没开', '七个平台的登录都在这里')}${tile('平台登录', Object.values(h.login).every(v => v === 'ok') ? '正常' : '有掉线', `上次体检 ${esc(h.doctorDay || '还没做')}${h.doctorDay === today ? '（今天）' : ''}`)}</div>
   ${sec('手动操作', '同一时间只跑一个')}

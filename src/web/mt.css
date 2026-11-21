@@ -151,3 +151,4 @@ summary .lg{--s:24px}summary b{width:70px;font-weight:600;flex:none}summary span
 .cal-e.plan{background:transparent;box-shadow:inset 0 0 0 1px rgba(0,0,0,.12)}
 .cal-lg{display:flex;gap:18px;flex-wrap:wrap;margin-top:12px;font-size:12px;color:var(--t2)}
 @media (max-width:760px){.cal-d{min-height:84px;padding:5px}.cal-e img{display:none}.cal-e b{font-size:11px}.cal-e span{display:none}}
+a.light{text-decoration:none;color:inherit;cursor:pointer}a.light:hover{filter:brightness(.97)}

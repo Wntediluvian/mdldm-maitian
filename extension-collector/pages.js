@@ -14,7 +14,7 @@ export async function scrollAll(rounds) {
 
 export function loggedOut() {
   const t = (document.body.innerText || '').slice(0, 4000);
-  return /login|passport|signin/i.test(location.pathname + location.hostname) || /扫码登录|验证码登录|登录后|请先登录|立即登录/.test(t);
+  return /login|passport|signin/i.test(location.pathname + location.hostname) || /扫码登录|验证码登录|登录后|请先登录|立即登录|使用账号登录|微信扫一扫，选择公众平台账号登录/.test(t);
 }
 
 // 抖音 作品管理：页面上的时间是电脑本地时区
@@ -105,4 +105,13 @@ export async function xProfile() {
   const fol = [...document.querySelectorAll('a[href$="/verified_followers"],a[href$="/followers"]')].map((a) => a.innerText.replace(/\s+/g, ' ')).join(' ');
   const fm = fol.match(/([\d,.]+)\s*(万)?\s*(?:关注者|Followers)/i);
   return { followers: fm ? Math.round(parseFloat(fm[1].replace(/,/g, '')) * (fm[2] ? 10000 : 1)) : null, items: [...seen.values()] };
+}
+
+// 公众号登录页上的二维码，画成 PNG 交回去（同源图片，画布不会被污染）。只读，不点不填
+export function wechatQr() {
+  const i = document.querySelector('img.login__type__container__scan__qrcode');
+  if (!i || !i.complete || !i.naturalWidth) return { qr: '' };
+  const c = document.createElement('canvas'); c.width = i.naturalWidth + 48; c.height = i.naturalHeight + 48;
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(i, 24, 24);
+  return { qr: c.toDataURL('image/png') };
 }

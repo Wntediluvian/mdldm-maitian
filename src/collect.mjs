@@ -3,8 +3,10 @@
 //   item: { title, publishedAt（ISO，带时区）, statusId（X 的帖子编号）, views, likes, comments, shares, favorites }
 // 怎么对上已登记的文章：X 按帖子编号对链接；公众号按标题；其余平台按“发布于 YYYY-MM-DD HH:MM”（北京时间，精确到分）。
 // 对不上的条目（短帖、还没登记的文章）不入库，只在返回里计数。口令是 config.web.collectToken，和网页口令分开。
-import fs from 'node:fs'; import path from 'node:path'; import { fileURLToPath } from 'node:url';
-import { db, saveMetric, log, setMeta } from './db.mjs';
+import fs from 'node:fs'; import path from 'node:path'; import { fileURLToPath } from 'node:url'; import { execFile } from 'node:child_process';
+import { db, saveMetric, log, setMeta, getMeta, NAMES } from './db.mjs';
+import { config } from './feishu.mjs';
+import { sendWechat } from './wechat.mjs';
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
 db.exec('CREATE TABLE IF NOT EXISTS followers (day TEXT, platform TEXT, total INTEGER, gain INTEGER, loss INTEGER, source TEXT, collected_at TEXT, PRIMARY KEY (day, platform));');
@@ -41,12 +43,31 @@ function findEpisode(platform, it) {
   return null;
 }
 
+// 平台后台掉登录（或登录的不是自己的号）：经微信网关提醒作者去扫码。同一平台同一种问题一天只提醒一次。
+const LOGIN_URL = { wechat: 'mp.weixin.qq.com', douyin: 'creator.douyin.com', xhs: 'creator.xiaohongshu.com', bilibili: 'member.bilibili.com' };
+function remindLogin(p, err, day) {
+  if (!['not_logged_in', 'wrong_account'].includes(err) || !config.wechat?.notify) return;
+  if (p === 'wechat' && err === 'not_logged_in') return;   // 公众号掉登录走二维码（handleQr），不另发文字
+  const key = `remind:${p}:${err}`;
+  if (getMeta(key) === day) return;
+  setMeta(key, day);
+  const name = NAMES[p] || p;
+  const head = err === 'not_logged_in' ? `${name}后台掉登录了，有空到电脑上扫一下码` : `${name}后台登录的不是 Grady 的号，要换回来`;
+  const body = `电脑上打开 Edge 配置 2，进 ${LOGIN_URL[p] || name + '后台'}，用微信扫码登录。登录后点一下工具栏的“Grady 采集”图标补采。没处理的话明天采集时还会再提醒一次。`;
+  sendWechat(`${head}
+${body}`, config.wechat).catch(() => {});
+}
+
 export function ingest(payload) {
   const day = bj(payload.at || Date.now()).slice(0, 10);
   const out = { day, platforms: {} };
+  // 同一批里至少有一个平台读成功，才说明这是放自媒体账号的那个浏览器配置；别的配置没登录不提醒
+  const home = (payload.results || []).some((r) => !r.error);
   for (const r of payload.results || []) {
     const p = r.platform, o = (out.platforms[p] = { matched: 0, unmatched: 0, followers: null, error: r.error || '' });
-    if (r.error) { setMeta(`collect:${p}:error`, `${day} ${r.error}`); continue; }
+    // 每个平台最近一次的结果，给大屏右上角的“采集”灯用
+    const last = (x) => setMeta(`collect:${p}:last`, JSON.stringify({ at: new Date().toISOString(), ...x }));
+    if (r.error) { setMeta(`collect:${p}:error`, `${day} ${r.error}`); last({ error: r.error }); if (home) remindLogin(p, r.error, day); continue; }
     const fans = num(r.followers);
     if (fans != null) {
       db.prepare('INSERT INTO followers (day, platform, total, gain, loss, source, collected_at) VALUES (?,?,?,?,?,?,?) ON CONFLICT(day, platform) DO UPDATE SET total=excluded.total, source=excluded.source, collected_at=excluded.collected_at')
@@ -60,6 +81,7 @@ export function ingest(payload) {
       o.matched++;
     }
     setMeta(`collect:${p}`, new Date().toISOString());
+    last({ matched: o.matched, items: (r.items || []).length });
   }
   if ((payload.results || []).some((r) => !r.error)) setMeta('metricsDay', day);
   const line = `${payload.profile || '?'} ${payload.build || ''} ${(payload.results || []).length ? JSON.stringify(out.platforms) : '开始采集'}`;
@@ -83,4 +105,61 @@ export async function handleCollect(req, res, send, token, tokenEq) {
   try { payload = JSON.parse(raw); } catch { return send(res, 400, { error: '不是 JSON' }); }
   if (!token || !tokenEq(String(payload.token || ''), token)) return send(res, 401, { error: '采集口令不对' });
   try { return send(res, 200, ingest(payload)); } catch (e) { return send(res, 500, { error: e.message }); }
+}
+
+// ---- 掉登录时把登录二维码发到作者微信（目前只有公众号） ----
+const QR_PLATFORMS = ['wechat'];
+const QR_GAP = 2 * 3600e3;   // 两小时内最多发一张码，省着用腾讯给的主动消息额度
+// 作者最近（约 11 小时内）在微信里说过话，主动消息才送得到；否则文字进排队、图片丢掉
+function authorFresh() {
+  return new Promise((resolve) => {
+    if (!config.wechat?.notify) return resolve({ fresh: false, min: Infinity });
+    execFile(process.execPath, [config.wechat.notify, '--status'], { timeout: 20000, windowsHide: true }, (err, stdout) => {
+      const t = String(stdout || ''), m = t.match(/last_inbound_min=(\d+)/);
+      resolve({ fresh: /\bfresh=yes\b/.test(t), min: m ? +m[1] : Infinity });
+    });
+  });
+}
+
+// POST /api/collect/qr { token, platform, png: dataURL, force }
+export async function handleQr(req, res, send, token, tokenEq) {
+  let raw = '';
+  for await (const c of req) { raw += c; if (raw.length > 3e6) return send(res, 413, { error: '太大' }); }
+  let b; try { b = JSON.parse(raw); } catch { return send(res, 400, { error: '不是 JSON' }); }
+  if (!token || !tokenEq(String(b.token || ''), token)) return send(res, 401, { error: '采集口令不对' });
+  const p = String(b.platform || ''), m = String(b.png || '').match(/^data:image\/png;base64,([A-Za-z0-9+/=]+)$/);
+  if (!QR_PLATFORMS.includes(p) || !m) return send(res, 400, { error: '参数不对' });
+  if (!config.wechat?.notify) return send(res, 200, { sent: false, reason: 'no_wechat' });
+  const name = NAMES[p] || p, day = bj(Date.now()).slice(0, 10);
+  if (!b.force && Date.now() - Date.parse(getMeta(`qr:${p}:at`) || 0) < QR_GAP) return send(res, 200, { sent: false, reason: 'recent' });
+  if (!(await authorFresh()).fresh) {
+    // 发图也收不到：发一句文字（会排队，作者下次开口时送到），让他回一句话，定时检查会在半小时内补发登录码
+    if (getMeta(`remind:${p}:qr-wait`) !== day) {
+      setMeta(`remind:${p}:qr-wait`, day);
+      sendWechat(`${name}后台掉登录了，回我一句话我就把登录码发过来
+你在微信里随便说一句，半小时内会收到一张登录码，直接扫就行。`, config.wechat).catch(() => {});
+    }
+    return send(res, 200, { sent: false, reason: 'not_fresh' });
+  }
+  const dir = path.join(ROOT, 'logs', 'qr'); fs.mkdirSync(dir, { recursive: true });
+  for (const f of fs.readdirSync(dir)) if (Date.now() - fs.statSync(path.join(dir, f)).mtimeMs > 86400e3) fs.rmSync(path.join(dir, f), { force: true });
+  const file = path.join(dir, `${p}-${Date.now()}.png`);
+  fs.writeFileSync(file, Buffer.from(m[1], 'base64'));
+  const r = await sendWechat(`${name}后台掉登录了，直接扫这张码
+4 分钟内有效，扫完我接着把今天的数据采完。过期了也没事，你在微信里说过话的话，两小时后我再发一张。`, config.wechat, { file });
+  if (r.sent) setMeta(`qr:${p}:at`, new Date().toISOString());
+  log('', p, 'login-qr', r.sent ? '登录码已发到微信' : `没发出去 ${r.line}`.slice(0, 300));
+  return send(res, 200, { sent: r.sent, code: r.code });
+}
+
+// GET /api/collect/login-wanted?token=…：哪些平台现在该补一次登录（插件每 30 分钟问一次）
+export async function handleLoginWanted(u, res, send, token, tokenEq) {
+  if (!token || !tokenEq(String(u.searchParams.get('token') || ''), token)) return send(res, 401, { error: '采集口令不对' });
+  const want = QR_PLATFORMS.filter((p) => {
+    let last = null; try { last = JSON.parse(getMeta(`collect:${p}:last`) || 'null'); } catch {}
+    return last && last.error === 'not_logged_in' && Date.now() - Date.parse(getMeta(`qr:${p}:at`) || 0) >= QR_GAP;
+  });
+  // 只在作者 3 小时内在微信里说过话时补发：说明他醒着、在用微信，码发过去能马上扫（作者常在美国时区，不按北京钟点判断）
+  if (!want.length || (await authorFresh()).min > 180) return send(res, 200, { platforms: [] });
+  return send(res, 200, { platforms: want });
 }
