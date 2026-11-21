@@ -7,7 +7,7 @@ import { BASE, TOKEN, X_HANDLE, PROFILE, ACCOUNTS } from './token.js';
 
 // 每次改了这个文件夹里的代码就改这个编号。插件开工前会问工作台磁盘上的编号是多少，不一样就自己重新加载，
 // 所以以后改读取规则不用再去扩展管理页手动点“重新加载”。
-const BUILD = '2026-11-21.1';
+const BUILD = '2026-11-22.2';
 // 后台标签页里，X 和小红书的列表滚不出更早的条目（页面不可见时不加载），每天自动跑只读得到最近十来条，够用。
 // 点图标手动采时改在前台开页面，能把更早的也读全；那两三分钟里标签页会自己切换，结束后切回原来那页。
 let foreground = false;
@@ -22,7 +22,7 @@ const PLANS = {
   douyin: [{ url: 'https://creator.douyin.com/creator-micro/home', fn: P.douyinHome }, { url: 'https://creator.douyin.com/creator-micro/content/manage', fn: P.douyinList, scroll: true }],
   xhs: [{ url: 'https://creator.xiaohongshu.com/new/home', fn: P.xhsHome }, { url: 'https://creator.xiaohongshu.com/new/note-manager', fn: P.xhsList, scroll: true }],
   bilibili: [{ url: 'https://member.bilibili.com/platform/upload-manager/opus', fn: P.biliList, allFrames: true, settle: 9000 }],
-  wechat: [{ url: 'https://mp.weixin.qq.com/', fn: P.wechatHome }],
+  wechat: [{ url: 'https://mp.weixin.qq.com/', fn: P.wechatHome, login: 'wechat' }],
   x: X_HANDLE ? [{ url: `https://x.com/${X_HANDLE}`, fn: P.xProfile }] : [],
 };
 
@@ -43,11 +43,49 @@ async function readStep(step) {
   try {
     await waitLoaded(tab.id);
     await sleep(step.settle || 6000);
-    if ((await run(tab.id, P.loggedOut))[0]) return { error: 'not_logged_in' };
+    if ((await run(tab.id, P.loggedOut))[0]) {
+      // 公众号掉登录：把登录页上的二维码发到作者微信，页面开着等他扫；扫完接着在这个页面上读
+      if (!step.login || !(await qrLogin(tab.id, step.login))) return { error: 'not_logged_in' };
+      await waitLoaded(tab.id); await sleep(5000);
+    }
     if (step.scroll) await run(tab.id, P.scrollAll);
     const got = await run(tab.id, step.fn, !!step.allFrames);
     return got[0] || {};
   } finally { await chrome.tabs.remove(tab.id).catch(() => {}); }
+}
+
+// 掉登录时取登录二维码交给工作台，由工作台经微信网关发给作者；发出去了就等最多 4 分钟看他扫没扫。
+// 发不出去（作者太久没在微信里说话、腾讯拒收，或刚发过）就返回 false，工作台那边会改发一句文字提醒。
+async function qrLogin(tabId, p) {
+  await sleep(1500);
+  const [got] = await run(tabId, P.wechatQr);
+  if (!got || !got.qr) return false;
+  let r = {};
+  try { r = await (await fetch(`${BASE}/api/collect/qr`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ token: TOKEN, platform: p, png: got.qr, force: foreground }) })).json(); } catch {}
+  if (!r.sent) return false;
+  for (const end = Date.now() + 4 * 60e3; Date.now() < end;) {
+    await sleep(3000);
+    if (!(await chrome.tabs.get(tabId).catch(() => null))) return false;
+    const [out] = await run(tabId, P.loggedOut).catch(() => [true]);
+    if (out === false) return true;
+  }
+  return false;
+}
+
+// 定时检查（每 30 分钟）：公众号还掉着登录、作者最近在微信里说过话、两小时内没发过码，工作台就会说“要”，这里补一次登录和采集
+async function maybeLogin() {
+  if (running) return;
+  let w = {};
+  try { w = await (await fetch(`${BASE}/api/collect/login-wanted?token=${encodeURIComponent(TOKEN)}`)).json(); } catch { return; }
+  for (const p of w.platforms || []) {
+    if (!PLANS[p]) continue;
+    running = true;
+    try {
+      const r = await collectPlatform(p);
+      await post({ profile: await who(), at: new Date().toISOString(), build: BUILD, results: [r] }).catch(() => {});
+      if (!r.error) { const st = await chrome.storage.local.get('off'); const off = st.off || {}; delete off[p]; await chrome.storage.local.set({ off }); }
+    } finally { running = false; }
+  }
 }
 
 // B站粉丝数：用已登录的身份问它自己的公开接口（和工作台原来的做法一样）
@@ -103,11 +141,12 @@ async function collectAll(force) {
   const [was] = foreground ? await chrome.tabs.query({ active: true, lastFocusedWindow: true }) : [];
   try {
     for (const p of Object.keys(PLANS)) {
-      if (!PLANS[p].length || off[p]) continue;
+      // “没登录”的平台第二天自动再试一次（作者扫完码就能恢复，也能每天提醒一次）；登录的不是自己的号、没配账号的，等点图标才重试
+      if (!PLANS[p].length || (off[p] && !(String(off[p]).endsWith(':retry') && !String(off[p]).startsWith(bjDay())))) continue;
       if (p === 'x' && !results.some((r) => !r.error)) { results.push({ platform: 'x', error: 'not_home_profile' }); continue; }
       let r;
       try { r = await collectPlatform(p); } catch (e) { r = { platform: p, error: String(e.message || e).slice(0, 120) }; }
-      if (['not_logged_in', 'wrong_account', 'no_account_configured'].includes(r.error)) off[p] = bjDay();   // 这个浏览器没登录、登录的是别的号、或没配账号：以后不再打开，点图标时重试
+      if (['not_logged_in', 'wrong_account', 'no_account_configured'].includes(r.error)) off[p] = r.error === 'not_logged_in' ? `${bjDay()}:retry` : bjDay();   // 这个浏览器没登录、登录的是别的号、或没配账号：以后不再打开，点图标时重试
       results.push(r);
     }
     const payload = { profile: await who(), at: new Date().toISOString(), build: BUILD, results };
@@ -153,7 +192,7 @@ chrome.alarms.onAlarm.addListener(async (a) => {
   if (a.name !== 'tick') return;
   const { lastAutoDay } = await chrome.storage.local.get('lastAutoDay');
   if (bjNow().getUTCHours() >= 9 && lastAutoDay !== bjDay()) await start(false);
-  else await reloadIfStale('');
+  else if (!(await reloadIfStale(''))) await maybeLogin();
 });
 chrome.action.onClicked.addListener(() => start(true));
 // 刚因为代码更新重载过：把重载前要做的那次采集接着做完

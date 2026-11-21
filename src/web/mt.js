@@ -23,7 +23,7 @@ function topbar(O, on) {
   const h = O.health, today = new Date().toLocaleDateString('zh-CN'), loginOk = Object.values(h.login).every(v => v === 'ok'), checked = h.doctorDay === today, n = new Date();
   const nav = [['/', '大屏', 'board'], ['/p#/traffic', '流量', 'traffic'], ['/p#/calendar', '日历', 'calendar'], ['/p#/convert', '转化', 'convert'], ['/p#/archive', '档案', 'archive'], ['/p#/system', '系统', 'system']];
   return `<div class="top"><a class="logo" href="/">${brand(typeof O === 'object' && O ? O.name : '')}</a><div class="tag">内容与粉丝监控</div><div class="nav">${nav.map(([u, t, k]) => `<a class="${k === on ? 'on' : ''}" href="${u}">${t}</a>`).join('')}</div>
-    <div class="lights">${h.chromeOn ? '<span class="light ok">守护进程 运行中</span>' : `<span class="light ${h.dataDay && (Date.now() - new Date(h.dataDay + 'T00:00:00+08:00')) < 2.5 * 864e5 ? 'ok' : 'warn'}">数据 ${h.dataDay ? '更新到 ' + h.dataDay.slice(5) : '还没采'}</span>`}<span class="light ${h.nas ? 'ok' : 'bad'}">${h.nasOn ? 'NAS' : '工程目录'} ${h.nas ? (h.nasOn ? '已挂载' : '正常') : '读不到'}</span>${h.chromeOn ? `<span class="light ${h.chrome ? 'ok' : 'bad'}">专用浏览器 ${h.chrome ? '在线' : '没开'}</span>` : ''}<span class="light ${!loginOk ? 'bad' : checked ? 'ok' : 'warn'}">平台登录 ${!loginOk ? '有掉线' : checked ? '今日已检' : '今天还没检'}</span></div>
+    <div class="lights">${h.chromeOn ? `<span class="light ok">守护进程 运行中</span><span class="light ${h.nas ? 'ok' : 'bad'}">NAS ${h.nas ? '已挂载' : '读不到'}</span><span class="light ${h.chrome ? 'ok' : 'bad'}">专用浏览器 ${h.chrome ? '在线' : '没开'}</span><span class="light ${!loginOk ? 'bad' : checked ? 'ok' : 'warn'}">平台登录 ${!loginOk ? '有掉线' : checked ? '今日已检' : '今天还没检'}</span>` : collectLights(h)}</div>
     <div class="clock"><small>${n.getMonth() + 1}/${n.getDate()} 周${'日一二三四五六'[n.getDay()]}</small>${pad(n.getHours())}:${pad(n.getMinutes())}</div></div>`;
 }
 function niceMax(v) { const p = Math.pow(10, Math.floor(Math.log10(Math.max(v, 1)))); const m = v / p; return (m <= 1 ? 1 : m <= 1.5 ? 1.5 : m <= 2 ? 2 : m <= 3 ? 3 : m <= 4 ? 4 : m <= 5 ? 5 : m <= 7.5 ? 7.5 : 10) * p; }
@@ -64,3 +64,10 @@ function drawLines(el, series) {
   const tip = document.createElement('div'); tip.id = 'tip'; document.addEventListener('DOMContentLoaded', () => document.body.append(tip));
   document.addEventListener('mousemove', (e) => { const t = e.target.closest && e.target.closest('[data-tip]'); if (!t) { tip.style.display = 'none'; return; } tip.textContent = t.dataset.tip; tip.style.display = 'block'; tip.style.left = Math.min(innerWidth - tip.offsetWidth - 8, e.clientX + 14) + 'px'; tip.style.top = Math.max(8, e.clientY - 34) + 'px'; });
 })();
+
+// 本机模式的状态灯：数据更新到哪天 + 各平台最近一次采集（系统页有明细）
+function collectLights(h) {
+  const fresh = h.dataDay && (Date.now() - new Date(h.dataDay + 'T00:00:00+08:00')) < 2.5 * 864e5;
+  const xs = Object.values(h.collect || {}), ok = xs.filter((x) => x && !x.error && x.items && (Date.now() - new Date(x.at)) / 864e5 <= 2).length;
+  return `<span class="light ${fresh ? 'ok' : 'warn'}">数据 ${h.dataDay ? '更新到 ' + h.dataDay.slice(5) : '还没采'}</span>` + (xs.length ? `<a class="light ${ok === xs.length ? 'ok' : 'warn'}" href="/p#/system">采集 ${ok}/${xs.length} 正常</a>` : '');
+}

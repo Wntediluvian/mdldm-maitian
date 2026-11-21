@@ -107,6 +107,8 @@ async function handle(req, res) {
   const u = new URL(req.url, 'http://x');
   // 采集插件交读数：用自己的口令（config.web.collectToken），不走网页登录
   if (u.pathname === '/api/collect/build') { const { handleBuild } = await import('./collect.mjs'); return handleBuild(u, res, send, W.collectToken, tokenEq); }
+  if (u.pathname === '/api/collect/qr' && req.method === 'POST') { const { handleQr } = await import('./collect.mjs'); return handleQr(req, res, send, W.collectToken, tokenEq); }
+  if (u.pathname === '/api/collect/login-wanted') { const { handleLoginWanted } = await import('./collect.mjs'); return handleLoginWanted(u, res, send, W.collectToken, tokenEq); }
   if (u.pathname === '/api/collect' && req.method === 'POST') { const { handleCollect } = await import('./collect.mjs'); return handleCollect(req, res, send, W.collectToken, tokenEq); }
   // 访问控制：前面挂了 Cloudflare Access（邮箱验证码）就认它的登录凭证；否则用口令（第一次带 ?key= 进来，之后用 cookie）
   if (/^\/static\/icon-\d+\.png$/.test(u.pathname)) return send(res, 200, fs.readFileSync(path.join(DIR, 'web', path.basename(u.pathname))), 'image/png', { 'cache-control': 'max-age=86400' });   // 主屏幕图标不用登录
@@ -147,7 +149,7 @@ async function handle(req, res) {
       metrics: db.prepare('SELECT day, episode_id, platform, views FROM metrics ORDER BY day').all(),
       followers: db.prepare("SELECT day, platform, total, gain, loss, source FROM followers WHERE day >= date('now','localtime','-40 day') ORDER BY day").all(),
       samples: db.prepare('SELECT ts, episode_id, platform, views FROM samples ORDER BY ts').all(),
-      feed: feed(), health: { nasOn: !!config.nasUrl, chromeOn: !!config.chromePort, dataDay: (db.prepare('SELECT MAX(day) d FROM metrics').get() || {}).d || '', nas: fs.existsSync(config.rootPath), chrome: await chromeUp(), metricsDay: getMeta('metricsDay') || '', doctorDay: getMeta('doctorDay') || '', login: Object.fromEntries((config.keepAlive || []).map(k => [k, getMeta(`login:${k}`) || '']) ) }, now: new Date().toISOString() });
+      feed: feed(), health: { nasOn: !!config.nasUrl, chromeOn: !!config.chromePort, dataDay: (db.prepare('SELECT MAX(day) d FROM metrics').get() || {}).d || '', nas: fs.existsSync(config.rootPath), chrome: await chromeUp(), metricsDay: getMeta('metricsDay') || '', doctorDay: getMeta('doctorDay') || '', login: Object.fromEntries((config.keepAlive || []).map(k => [k, getMeta(`login:${k}`) || '']) ), collect: Object.fromEntries((config.platforms || []).map((p) => { try { return [p, JSON.parse(getMeta(`collect:${p}:last`) || 'null')]; } catch { return [p, null]; } })) }, now: new Date().toISOString() });
   }
   if (u.pathname === '/site-logo') { const f = SITE && config.site.logo && path.resolve(ROOT, config.site.logo); return f && fs.existsSync(f) ? send(res, 200, fs.readFileSync(f), /\.svg$/.test(f) ? 'image/svg+xml' : /\.jpe?g$/.test(f) ? 'image/jpeg' : 'image/png', { 'cache-control': 'max-age=3600' }) : send(res, 404, ''); }
   if (u.pathname === '/api/episode') { const ep = getEpisode(u.searchParams.get('id')); return ep ? send(res, 200, episodeView(ep, true)) : send(res, 404, { error: '没有这一期' }); }
