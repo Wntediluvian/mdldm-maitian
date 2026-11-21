@@ -4,10 +4,12 @@
 // 这里只发一次、不重试；没发出去时由调用方决定要不要走别的渠道。
 import { execFile } from 'node:child_process';
 
-export function sendWechat(text, cfg, { quiet = false } = {}) {
+export function sendWechat(text, cfg, { quiet = false, file = '', project = '' } = {}) {
   const lines = String(text).split('\n').map((l) => l.trim()).filter(Boolean);
   const head = lines.shift() || '工作台';
   const args = [cfg.notify, '--from', cfg.from || '发布工作台', head];
+  if (project || cfg.project) args.push('--project', project || cfg.project);
+  if (file) args.push('--file', file);   // 图片（如登录二维码）：wx-notify 立即发，不暂存合并
   if (lines.length) args.push(lines.join('\n'));
   return new Promise((resolve) => {
     execFile(process.execPath, args, { timeout: 45000, windowsHide: true }, (err, stdout) => {

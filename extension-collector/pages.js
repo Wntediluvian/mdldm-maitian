@@ -106,3 +106,12 @@ export async function xProfile() {
   const fm = fol.match(/([\d,.]+)\s*(万)?\s*(?:关注者|Followers)/i);
   return { followers: fm ? Math.round(parseFloat(fm[1].replace(/,/g, '')) * (fm[2] ? 10000 : 1)) : null, items: [...seen.values()] };
 }
+
+// 公众号登录页上的二维码，画成 PNG 交回去（同源图片，画布不会被污染）。只读，不点不填
+export function wechatQr() {
+  const i = document.querySelector('img.login__type__container__scan__qrcode');
+  if (!i || !i.complete || !i.naturalWidth) return { qr: '' };
+  const c = document.createElement('canvas'); c.width = i.naturalWidth + 48; c.height = i.naturalHeight + 48;
+  const x = c.getContext('2d'); x.fillStyle = '#fff'; x.fillRect(0, 0, c.width, c.height); x.drawImage(i, 24, 24);
+  return { qr: c.toDataURL('image/png') };
+}
